@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>経路探索テスト</title>
+<link rel="stylesheet" href="http://cdn.leafletjs.com/leaflet-0.7.3/leaflet.css"/>
+<script src="http://cdn.leafletjs.com/leaflet-0.7.3/leaflet.js"></script>
+<script src="./lib/TileLayer.GeoJSON.js"></script>
+<script src="./lib/turf.min.js"></script>
+<script src="./lib/dijkstra/graph.js"></script>
+<style>
+
+body {padding: 0; margin: 0;}
+html, body, #mapdiv {height: 100%; width: 100%;}
+.leaflet-container {background: #fff;}
+.gsi-div-icon {
+	background: none;
+	white-space: nowrap;
+	border:none;
+}
+</style>
+</head>
+<body>
+<div id="mapdiv">
+<script>
+
+//道路中心線の両端nodeに付けるid
+var nodeid = 0;
+//道路中心線の両端座標にidを付けて取っておく
+var nodes = {
+  type: "FeatureCollection",
+  features: []
+};
+
+var setNode = function(lng, lat) {
+  var id;
+  var node = turf.filter(nodes, "latlng", lat+"-"+lng);
+    
+  if (node.features.length) {
+    id = node.features[0].properties.id;
+  } else {
+    id = nodeid++;
+    var newnode = {
+      type: "Feature",
+      properties: {
+        id: id,
+        latlng: lat+"-"+lng
+      },
+      geometry: {
+        type: "Point",
+        coordinates: [lng, lat]
+      }
+    };
+    nodes.features.push(newnode);
+  }
+  return id;
+};
+   
+//経路探索用テーブル
+var dijkstramap = {};
+var dijkstrafeature = {};
+    
+var setDijkstraMap = function(sid, eid, length, feature) {
+  if (!(sid in dijkstramap)) {
+    dijkstramap[sid] = {};    
+    dijkstrafeature[sid] = {};    
+  } 
+  dijkstramap[sid][eid] = length;    
+  dijkstrafeature[sid][eid] = feature;    
+};
+    
+//マーカー移動後の経路探索
+var markerDragEnd = function (e) {
+  //前回の結果を消去
+  shortestpathlayer.clearLayers();
+    
+  //始点、終点マーカーレイヤからマーカー取得
+  var markers = markerlayer.getLayers();     
+    
+  //マーカー近傍のnodeを探索
+  var start = turf.nearest(markers[0].toGeoJSON(), nodes);
+  var end = turf.nearest(markers[1].toGeoJSON(), nodes);
+  
+  //経路探索
+  var graph = new Graph(dijkstramap);
+  var shortestpath = graph.findShortestPath(start.properties.id, end.properties.id);
+    
+  //探索結果から経路作成
+  var f = null;
+  for (var i=0; i<shortestpath.length-1; i++) {
+    if (shortestpath[i] in dijkstrafeature) {
+      if (shortestpath[i+1] in dijkstrafeature[shortestpath[i]]) {
+        f = dijkstrafeature[shortestpath[i]][shortestpath[i+1]];
+        shortestpathlayer.addData(f);
+      }
+    }
+    if (shortestpath[i+1] in dijkstrafeature) {
+      if (shortestpath[i] in dijkstrafeature[shortestpath[i+1]]) {
+        f = dijkstrafeature[shortestpath[i+1]][shortestpath[i]];
+        shortestpathlayer.addData(f);
+      }
+    }
+  }
+};
+    
+//経路探索結果レイヤ
+var shortestpathlayer = L.geoJson(null, {style: function(){return {"color": "#ff0000", "weight": 5};}, clickable:false});
+    
+//道路中心線レイヤ
+var rdcllayer = new L.TileLayer.GeoJSON(
+  'http://cyberjapandata.gsi.go.jp/xyz/experimental_rdcl/{z}/{x}/{y}.geojson',
+  {minZoom: 16,  maxNativeZoom: 16,  maxZoom: 16}, 
+  {
+    style: function() {
+      return {"color": "#0000ff", "weight": 2};
+    },
+    onEachFeature: function (feature, layer) {
+      //経路探索時の重みとして経路長さを使用
+      var length = turf.lineDistance(feature, "kilometers");
+        
+      //経路両端にidを付けて取っておく
+      var latlng = feature.geometry.coordinates;
+      feature.properties.sid = setNode(latlng[0][0],latlng[0][1]);
+      feature.properties.eid = setNode(latlng[latlng.length-1][0],latlng[latlng.length-1][1]);
+        
+      //経路探索用のテーブルへ保存
+      setDijkstraMap(feature.properties.sid, feature.properties.eid, length, feature);
+      setDijkstraMap(feature.properties.eid, feature.properties.sid, length, feature);
+    }
+  }
+);
+
+//地理院地図レイヤ
+var pale = L.tileLayer(
+'http://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png',
+{attribution: "地理院タイル（淡色地図）", maxZoom: 18, opacity:1});
+
+//始点、終点マーカーレイヤ
+var markerdata = {
+  type: "FeatureCollection",
+  features: [
+    { type: "Feature",
+      geometry: {"type": "Point", "coordinates": [142.368805, 43.771179]},
+      properties: {}
+    },
+    { type: "Feature",
+      geometry: {"type": "Point", "coordinates": [142.368905, 43.771279]},
+      properties: {}
+    }
+  ]
+};
+var markerlayer = L.geoJson(markerdata, {
+    pointToLayer: function(feature, latlng) {
+      return L.marker(latlng);
+    },
+    onEachFeature: function (feature, layer) {
+      layer.options.draggable = true;
+      layer.on('dragend', function(e){markerDragEnd(e);});
+    }
+});
+    
+var map = L.map("mapdiv", {
+  center: [43.771179, 142.368805], zoom: 16,minZoom: 16, maxZoom: 16,
+  layers: [pale, rdcllayer, markerlayer, shortestpathlayer]});
+
+</script>
+</body>
+</html>
